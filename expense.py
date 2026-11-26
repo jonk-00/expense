@@ -1,153 +1,107 @@
-import csv
-from datetime import datetime
 
-FILE_NAME = "expenses.csv"
-
-
-# Create the file with headers if not already there
-def init_file():
-    try:
-        with open(FILE_NAME, "x", newline="") as file:
-            writer = csv.writer(file)
-            writer.writerow(["Date", "Category", "Amount", "Description"])
-    except FileExistsError:
-        pass
+def init_file() -> None:
+    """Create the CSV file and header if needed."""
+    if not FILE_NAME.exists() or FILE_NAME.stat().st_size == 0:
+        with FILE_NAME.open("w", newline="", encoding="utf-8") as file:
+            csv.writer(file).writerow(HEADERS)
 
 
-# Add a new expense
-def add_expense():
-    category = input("Enter category (Food, Transport, Bills, etc.): ")
-    amount = float(input("Enter amount: "))
-    description = input("Enter description: ")
-    date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
-    with open(FILE_NAME, "a", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerow([date, category, amount, description])
-    print("✅ Expense added!")
-
-
-# Load all expenses into a list
-def load_expenses():
-    with open(FILE_NAME, "r") as file:
-        reader = csv.reader(file)
-        return list(reader)
-
-
-# Save all expenses back to file
-def save_expenses(expenses):
-    with open(FILE_NAME, "w", newline="") as file:
-        writer = csv.writer(file)
-        writer.writerows(expenses)
-
-
-# View all expenses
-def view_expenses():
-    expenses = load_expenses()
-    for i, row in enumerate(expenses):
-        print(f"{i}. {row}")
-
-
-# Edit an expense
-def edit_expense():
-    expenses = load_expenses()
-    view_expenses()
-
-    try:
-        idx = int(input("Enter the number of the expense to edit: "))
-        if idx == 0:
-            print("⚠️ Cannot edit header row.")
-            return
-        if idx >= len(expenses):
-            print("⚠️ Invalid index.")
-            return
-
-        # Show current values
-        date, category, amount, description = expenses[idx]
-        print(f"Editing: {expenses[idx]}")
-
-        # Get new values (leave blank to keep old)
-        new_category = input(f"Enter new category [{category}]: ") or category
-        new_amount = input(f"Enter new amount [{amount}]: ") or amount
-        new_description = input(f"Enter new description [{description}]: ") or description
-
-        expenses[idx] = [date, new_category, new_amount, new_description]
-        save_expenses(expenses)
-        print("✏️ Expense updated!")
-
-    except ValueError:
-        print("⚠️ Invalid input.")
-
-
-# Delete an expense
-def delete_expense():
-    expenses = load_expenses()
-    view_expenses()
-
-    try:
-        idx = int(input("Enter the number of the expense to delete: "))
-        if idx == 0:
-            print("⚠️ Cannot delete header row.")
-            return
-        if idx >= len(expenses):
-            print("⚠️ Invalid index.")
-            return
-
-        print(f"Deleting: {expenses[idx]}")
-        confirm = input("Are you sure? (y/n): ")
-        if confirm.lower() == "y":
-            expenses.pop(idx)
-            save_expenses(expenses)
-            print("🗑️ Expense deleted!")
-    except ValueError:
-        print("⚠️ Invalid input.")
-
-
-# Show summary totals by category
-def summary_by_category():
-    totals = {}
-    with open(FILE_NAME, "r") as file:
-        reader = csv.DictReader(file)
-        for row in reader:
-            category = row["Category"]
-            amount = float(row["Amount"])
-            totals[category] = totals.get(category, 0) + amount
-
-    print("\n📊 Spending by Category:")
-    for category, total in totals.items():
-        print(f"{category}: ${total:.2f}")
-
-
-# Main program
-def main():
+def load_rows() -> list[list[str]]:
     init_file()
-    while True:
-        print("\n--- Expense Tracker ---")
-        print("1. Add Expense")
-        print("2. View All Expenses")
-        print("3. Edit Expense")
-        print("4. Delete Expense")
-        print("5. Summary by Category")
-        print("6. Exit")
-        choice = input("Choose an option: ")
-
-        if choice == "1":
-            add_expense()
-        elif choice == "2":
-            view_expenses()
-        elif choice == "3":
-            edit_expense()
-        elif choice == "4":
-            delete_expense()
-        elif choice == "5":
-            summary_by_category()
-        elif choice == "6":
-            print("Goodbye! 👋")
-            break
-        else:
-            print("⚠️ Invalid choice. Try again.")
+    with FILE_NAME.open("r", newline="", encoding="utf-8") as file:
+        reader = csv.reader(file)
+        rows = list(reader)
+    if not rows or rows[0] != HEADERS:
+        raise HTTPException(status_code=500, detail="expenses.csv has an unexpected header. Expected: " + ", ".join(HEADERS))
+    valid_rows = []
+    for row in rows[1:]:
+        if len(row) == 4:
+            valid_rows.append(row)
+    return valid_rows
 
 
-if __name__ == "__main__":
-    main()
+def save_rows(rows: list[list[str]]) -> None:
+    with FILE_NAME.open("w", newline="", encoding="utf-8") as file:
+        writer = csv.writer(file)
+        writer.writerow(HEADERS)
+        writer.writerows(rows)
+
+
+def serialize(rows: list[list[str]]) -> list[dict[str, Any]]:
+    expenses = []
+    for index, (date, category, amount, description) in enumerate(rows):
+        try:
+            numeric_amount = float(amount)
+        except ValueError:
+            numeric_amount = 0.0
+        expenses.append({
+            "id": index,
+            "date": date,
+            "category": category,
+            "amount": numeric_amount,
+            "description": description,
+        })
+    return expenses
+
+
+@app.on_event("startup")
+def startup() -> None:
+    init_file()
+
+
+@app.get("/", include_in_schema=False)
+def frontend() -> FileResponse:
+    return FileResponse(BASE_DIR / "index.html")
+
+
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/expenses")
+def get_expenses() -> list[dict[str, Any]]:
+    return serialize(load_rows())
+
+
+@app.post("/api/expenses", status_code=201)
+def add_expense(expense: ExpenseInput) -> dict[str, Any]:
+    values = expense.cleaned()
+    date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows = load_rows()
+    rows.append([date, values["category"], f'{values["amount"]:.2f}', values["description"]])
+    save_rows(rows)
+    return serialize(rows)[-1]
+
+
+@app.put("/api/expenses/{expense_id}")
+def edit_expense(expense_id: int, expense: ExpenseInput) -> dict[str, Any]:
+    values = expense.cleaned()
+    rows = load_rows()
+    if expense_id < 0 or expense_id >= len(rows):
+        raise HTTPException(status_code=404, detail="Expense not found.")
+    date, _, _, _ = rows[expense_id]
+    rows[expense_id] = [date, values["category"], f'{values["amount"]:.2f}', values["description"]]
+    save_rows(rows)
+    return serialize(rows)[expense_id]
+
+
+@app.delete("/api/expenses/{expense_id}", status_code=204)
+def delete_expense(expense_id: int) -> None:
+    rows = load_rows()
+    if expense_id < 0 or expense_id >= len(rows):
+        raise HTTPException(status_code=404, detail="Expense not found.")
+    rows.pop(expense_id)
+    save_rows(rows)
+    return None
+
+
+@app.get("/api/summary")
+def summary_by_category() -> dict[str, Any]:
+    totals: dict[str, float] = {}
+    for expense in serialize(load_rows()):
+        category = expense["category"]
+        totals[category] = totals.get(category, 0.0) + expense["amount"]
+    return {"totals": totals, "total": round(sum(totals.values()), 2)}
+
 
